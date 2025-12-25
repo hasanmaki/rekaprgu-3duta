@@ -72,6 +72,57 @@ def get_summary_table(df: pd.DataFrame):
     return summary
 
 
+def get_styled_summary_table(df: pd.DataFrame):
+    """Transformasi data untuk tabel ringkasan dengan color coding."""
+    if df.empty:
+        return pd.DataFrame()
+
+    # Use final_status for summary instead of status_label
+    summary = (
+        df.groupby(["tujuan", "final_status"])
+        .size()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+
+    summary.columns.name = None
+
+    # Apply styling with color coding using the newer methods
+    def highlight_cells(styler):
+        # Apply different colors to different columns
+        if 'SUKSES PROFIT' in summary.columns:
+            styler.apply(
+                lambda x: ['background-color: lightgreen' if v > 0 else 'background-color: lightgray' for v in x],
+                subset=['SUKSES PROFIT']
+            )
+        if 'SUKSES LOSS' in summary.columns:
+            styler.apply(
+                lambda x: ['background-color: lightyellow' if v > 0 else 'background-color: lightgray' for v in x],
+                subset=['SUKSES LOSS']
+            )
+        if 'GAGAL A1' in summary.columns:
+            styler.apply(
+                lambda x: ['background-color: lightcoral' if v > 0 else 'background-color: lightgray' for v in x],
+                subset=['GAGAL A1']
+            )
+        return styler
+
+    # Apply styling to the dataframe
+    styled_summary = summary.style.pipe(highlight_cells)
+
+    # Add some additional styling
+    styled_summary = styled_summary.set_properties(**{
+        'text-align': 'center',
+        'font-weight': 'bold',
+        'border': '1px solid black'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [('background-color', '#f0f0f0'), ('font-weight', 'bold'), ('text-align', 'center')]},
+        {'selector': 'caption', 'props': [('caption-side', 'bottom'), ('font-size', '0.8em'), ('color', 'gray')]}
+    ])
+
+    return styled_summary
+
+
 def apply_filters(df: pd.DataFrame):
     """Apply filters to the dataframe based on session state"""
     if df.empty:
@@ -208,8 +259,8 @@ def render_matrix_and_calculation(df: pd.DataFrame):
     render_metrics(df)
 
     st.subheader("📊 Summary Matrix", divider="gray")
-    summary_df = get_summary_table(df)
-    st.dataframe(summary_df, width="stretch", hide_index=True)
+    styled_summary_df = get_styled_summary_table(df)
+    st.dataframe(styled_summary_df, width="stretch", hide_index=True, use_container_width=True)
 
     # Summary Statistics
     st.subheader("📋 Summary Statistics", divider="gray")
