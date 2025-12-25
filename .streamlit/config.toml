@@ -1,0 +1,16 @@
+[server]
+headless = true
+port = 8501
+runOnSave = true
+folderWatchBlacklist = ["logs"]
+# Max size, in megabytes, for files uploaded with the file_uploader.
+maxUploadSize = 1000
+
+[logger]
+level = "info"
+messageFormat  = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+
+[theme]
+base = "light"
+primaryColor = "#63acf5ff"
