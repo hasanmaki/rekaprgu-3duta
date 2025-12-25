@@ -25,15 +25,32 @@ def fetch_and_process_data(kode_produk: str):
 
     if df.empty:
         return df
-    df["status_label"] = "SUKSES SUSPECT"
+    df["status_label"] = "GAGAL"  # Default status
     is_success = df["status"] == 20
-    mask_gagal = ~is_success
-    mask_direct = is_success & df["sn"].str.startswith("SUP", na=False)
-    mask_wait = is_success & df["sn"].str.startswith("CHECK", na=False)
+    mask_valid = is_success & df["sn"].str.startswith("SUP", na=False)
+    mask_wait = is_success & ~df["sn"].str.startswith("SUP", na=False)
 
-    df.loc[mask_gagal, "status_label"] = "GAGAL"
-    df.loc[mask_direct, "status_label"] = "SUKSES DIRECT"
+    df.loc[mask_valid, "status_label"] = "SUKSES VALID"
     df.loc[mask_wait, "status_label"] = "SUKSES WAIT"
+
+    # Calculate final status based on business rules
+    df["final_status"] = "GAGAL A1"  # Default final status
+
+    # Group by tujuan to apply business rules
+    for tujuan, group in df.groupby("tujuan"):
+        valid_count = (group["status_label"] == "SUKSES VALID").sum()
+        wait_count = (group["status_label"] == "SUKSES WAIT").sum()
+
+        if valid_count == 1:
+            # Rule a: exactly 1 SUKSES VALID = SUKSES PROFIT
+            df.loc[group.index, "final_status"] = "SUKSES PROFIT"
+        elif valid_count > 1:
+            # Rule b: more than 1 SUKSES VALID = SUKSES LOSS (double inject)
+            df.loc[group.index, "final_status"] = "SUKSES LOSS"
+        elif valid_count == 0 and wait_count > 0:
+            # Rule c: no SUKSES VALID but has SUKSES WAIT = SUKSES PROFIT
+            df.loc[group.index, "final_status"] = "SUKSES PROFIT"
+        # else: remains GAGAL A1 (no success at all)
 
     return df
 
@@ -42,8 +59,9 @@ def get_summary_table(df: pd.DataFrame):
     """Transformasi data untuk tabel ringkasan."""
     if df.empty:
         return pd.DataFrame()
+    # Use final_status for summary instead of status_label
     summary = (
-        df.groupby(["tujuan", "status_label"])
+        df.groupby(["tujuan", "final_status"])
         .size()
         .unstack(fill_value=0)
         .reset_index()
@@ -52,6 +70,84 @@ def get_summary_table(df: pd.DataFrame):
     summary.columns.name = None
 
     return summary
+
+
+def apply_filters(df: pd.DataFrame):
+    """Apply filters to the dataframe based on session state"""
+    if df.empty:
+        return df
+
+    filtered_df = df.copy()
+
+    # Filter by final status
+    if st.session_state.get("final_status_filter", []):
+        filtered_df = filtered_df[
+            filtered_df["final_status"].isin(st.session_state.final_status_filter)
+        ]
+
+    # Filter by tujuan (partial match)
+    if st.session_state.get("tujuan_filter", ""):
+        tujuan_filter = st.session_state.tujuan_filter.lower()
+        filtered_df = filtered_df[
+            filtered_df["tujuan"].str.lower().str.contains(tujuan_filter, na=False)
+        ]
+
+    # Filter by SN (partial match)
+    if st.session_state.get("sn_filter", ""):
+        sn_filter = st.session_state.sn_filter.lower()
+        filtered_df = filtered_df[
+            filtered_df["sn"].str.lower().str.contains(sn_filter, na=False)
+        ]
+
+    return filtered_df
+
+
+@st.fragment
+def render_additional_filters():
+    """Render additional filters with fragment decorator for partial rerun"""
+    st.subheader("Filter Tambahan")
+
+    # Filter untuk final status
+    if "final_status_filter" not in st.session_state:
+        st.session_state.final_status_filter = []
+
+    final_status_options = ["SUKSES PROFIT", "SUKSES LOSS", "GAGAL A1"]
+    selected_final_status = st.multiselect(
+        "Filter Final Status",
+        options=final_status_options,
+        default=st.session_state.final_status_filter,
+        help="Pilih satu atau lebih final status untuk difilter",
+    )
+    st.session_state.final_status_filter = selected_final_status
+
+    # Filter untuk tujuan
+    if "tujuan_filter" not in st.session_state:
+        st.session_state.tujuan_filter = ""
+
+    tujuan_filter = st.text_input(
+        "Filter Tujuan (kosongkan untuk semua)",
+        value=st.session_state.tujuan_filter,
+        help="Masukkan tujuan yang ingin ditampilkan (partial match)",
+    )
+    st.session_state.tujuan_filter = tujuan_filter
+
+    # Filter untuk SN
+    if "sn_filter" not in st.session_state:
+        st.session_state.sn_filter = ""
+
+    sn_filter = st.text_input(
+        "Filter SN (kosongkan untuk semua)",
+        value=st.session_state.sn_filter,
+        help="Masukkan awalan SN yang ingin ditampilkan (partial match)",
+    )
+    st.session_state.sn_filter = sn_filter
+
+    # Reset filter button
+    if st.button("Reset Filter", type="secondary"):
+        st.session_state.final_status_filter = []
+        st.session_state.tujuan_filter = ""
+        st.session_state.sn_filter = ""
+        st.rerun()
 
 
 def render_sidebar():
@@ -65,6 +161,9 @@ def render_sidebar():
         btn_terapkan = st.button("Terapkan Filter", type="primary")
         if btn_terapkan:
             st.session_state.active_kode = kode_input
+
+        st.divider()
+        render_additional_filters()
 
         st.divider()
         st.subheader("Kalkulator Pemakaian")
@@ -88,39 +187,48 @@ def render_metrics(df: pd.DataFrame):
     with col2:
         st.metric("Total Unik Tujuan", border=True, value=df["tujuan"].nunique())
     with col3:
-        total_sukses = (
-            (df["status_label"] == "SUKSES DIRECT")
-            | (df["status_label"] == "SUKSES WAIT")
-            | (df["status_label"] == "SUKSES SUSPECT")
-        ).sum()
+        total_profit = (df["final_status"] == "SUKSES PROFIT").sum()
+        total_loss = (df["final_status"] == "SUKSES LOSS").sum()
         st.metric(
-            label="Total Sukses",
+            label="Total Sukses Profit",
             border=True,
-            help=f"detail : Sukses Direct: {(df['status_label'] == 'SUKSES DIRECT').sum()}, Sukses Wait: {(df['status_label'] == 'SUKSES WAIT').sum()}, Sukses Suspect: {(df['status_label'] == 'SUKSES SUSPECT').sum()}",
-            value=total_sukses,
+            help=f"Sukses Profit: {total_profit}, Sukses Loss: {total_loss} (double inject)",
+            value=total_profit,
         )
     with col4:
         st.metric(
-            "Total Gagal", border=True, value=(df["status_label"] == "GAGAL").sum()
+            "Total Gagal A1",
+            border=True,
+            value=(df["final_status"] == "GAGAL A1").sum(),
         )
 
 
-def render_main_content(df: pd.DataFrame):
-    if st.session_state.active_kode:
-        kode_list = [
-            k.strip() for k in st.session_state.active_kode.split(",") if k.strip()
-        ]
-        if len(kode_list) > 1:
-            st.header(
-                f"Rekap RGU - {len(kode_list)} Produk: {', '.join(kode_list)}",
-                divider="blue",
-            )
-        else:
-            st.header(f"Rekap RGU - Produk: {kode_list[0]}", divider="blue")
-    else:
-        st.header("Rekap RGU", divider="blue")
+def render_matrix_and_calculation(df: pd.DataFrame):
+    """Render metrics, summary matrix, and usage calculation"""
     render_metrics(df)
-    st.subheader("📈 Perhitungan Pemakaian", divider="gray")
+
+    st.subheader("📊 Summary Matrix", divider="gray")
+    summary_df = get_summary_table(df)
+    st.dataframe(summary_df, width="stretch", hide_index=True)
+
+    # Summary Statistics
+    st.subheader("📋 Summary Statistics", divider="gray")
+
+    # Create summary statistics dataframe
+    summary_stats = pd.DataFrame({
+        'Kategori': ['Total Transaksi', 'Total Tujuan Unik', 'SUKSES PROFIT', 'SUKSES LOSS', 'GAGAL A1'],
+        'Jumlah': [
+            len(df),
+            df['tujuan'].nunique(),
+            (df['final_status'] == 'SUKSES PROFIT').sum(),
+            (df['final_status'] == 'SUKSES LOSS').sum(),
+            (df['final_status'] == 'GAGAL A1').sum()
+        ]
+    })
+
+    st.dataframe(summary_stats, width="stretch", hide_index=True)
+
+    st.subheader("� Perhitungan Pemakaian", divider="gray")
     try:
         harga = (
             int(st.session_state.harga)
@@ -144,12 +252,9 @@ def render_main_content(df: pd.DataFrame):
 
     # Calculate usage
     asumsi_pemakaian = saldo_awal - saldo_akhir
-    total_sukses = (
-        (df["status_label"] == "SUKSES DIRECT")
-        | (df["status_label"] == "SUKSES WAIT")
-        | (df["status_label"] == "SUKSES SUSPECT")
-    ).sum()
-    actual_pemakaian = harga * total_sukses
+    # Use final_status for calculation - only count SUKSES PROFIT for actual usage
+    total_sukses_profit = (df["final_status"] == "SUKSES PROFIT").sum()
+    actual_pemakaian = harga * total_sukses_profit
     selisih = actual_pemakaian - asumsi_pemakaian
 
     # Display usage metrics
@@ -162,7 +267,7 @@ def render_main_content(df: pd.DataFrame):
         st.metric(
             "Actual Pemakaian",
             f"{actual_pemakaian:,}",
-            help=f"{harga} × {total_sukses} (Harga × Total Sukses)",
+            help=f"{harga} × {total_sukses_profit} (Harga × Total Sukses Profit)",
         )
     with col3:
         st.metric(
@@ -175,18 +280,36 @@ def render_main_content(df: pd.DataFrame):
         status = "✅ Cocok" if selisih == 0 else "⚠️ Tidak Cocok"
         st.metric("Status", status)
 
-    # Create tabs for Matrix and Data
-    with st.expander("Lihat Tabel Detail dan Matrix"):
-        tab1, tab2 = st.tabs(["📊 Matrix", "🔍 Data"])
 
-        with tab1:
-            # Summary Table (Matrix)
-            summary_df = get_summary_table(df)
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+def render_raw_data(df: pd.DataFrame):
+    """Render raw data table"""
+    st.subheader("🔍 Raw Data", divider="gray")
+    st.dataframe(df, width="stretch", hide_index=True)
 
-        with tab2:
-            # Detail Data Table
-            st.dataframe(df, use_container_width=True, hide_index=True)
+
+def render_main_content(df: pd.DataFrame):
+    if st.session_state.active_kode:
+        kode_list = [
+            k.strip() for k in st.session_state.active_kode.split(",") if k.strip()
+        ]
+        if len(kode_list) > 1:
+            st.header(
+                f"Rekap RGU - {len(kode_list)} Produk: {', '.join(kode_list)}",
+                divider="blue",
+            )
+        else:
+            st.header(f"Rekap RGU - Produk: {kode_list[0]}", divider="blue")
+    else:
+        st.header("Rekap RGU", divider="blue")
+
+    # Create main tabs for Matrix/Calculation and Raw Data
+    tab1, tab2 = st.tabs(["📊 Matrix & Kalkulasi", "🔍 Raw Data"])
+
+    with tab1:
+        render_matrix_and_calculation(df)
+
+    with tab2:
+        render_raw_data(df)
 
 
 # ==========================================
@@ -203,7 +326,25 @@ def main():
         data = fetch_and_process_data(st.session_state.active_kode)
 
         if not data.empty:
-            render_main_content(data)
+            # Apply filters to the data
+            filtered_data = apply_filters(data)
+
+            # Show filter info if any filters are applied
+            has_filters = (
+                st.session_state.get("final_status_filter", [])
+                or st.session_state.get("tujuan_filter", "")
+                or st.session_state.get("sn_filter", "")
+            )
+
+            if has_filters:
+                st.info(
+                    f"Menampilkan {len(filtered_data)} dari {len(data)} data (setelah filter)"
+                )
+
+            if not filtered_data.empty:
+                render_main_content(filtered_data)
+            else:
+                st.warning("Tidak ada data yang cocok dengan filter yang dipilih")
         else:
             st.warning(
                 body=f"Tidak ada data untuk kode produk: {st.session_state.active_kode}"
