@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "plotly>=6.5.0",
     "pyodbc>=5.3.0",
     "sqlalchemy>=2.0.45",
     "streamlit>=1.52.2",
