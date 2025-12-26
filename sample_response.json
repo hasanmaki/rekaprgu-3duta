@@ -1,0 +1,37 @@
+{
+    "msisdn": "6285754464750",
+    "serviceclass": "8003",
+    "custbalanceinfo": "0",
+    "Services": [
+        {
+            "packagename": "Kartu Perdana IM3 Ooredoo",
+            "activationdate": "25-Dec-2025",
+            "enddate": "24-Jan-2026",
+            "quotas": []
+        },
+        {
+            "packagename": "Freedom Internet 1.5GB/1Hari",
+            "activationdate": "26-Dec-2025",
+            "enddate": "27-Dec-2025",
+            "quotas": [
+                {
+                    "remainingquota": "2",
+                    "remainingquotatxt": "2",
+                    "remainingquotacry": "Rp2",
+                    "quotaunit": "GB",
+                    "quotaunittxt": "0",
+                    "name": "Kuota Utama",
+                    "expirydate": "27-Dec-2025"
+                }
+            ]
+        }
+    ],
+    "balance": {
+        "title": "Balance",
+        "value": "0",
+        "valuetxt": "0",
+        "valuecry": "Rp0",
+        "type": "balance"
+    },
+    "resultcode": "0"
+}

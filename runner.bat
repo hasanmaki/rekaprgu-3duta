@@ -48,7 +48,7 @@ echo     Starting Streamlit Server...
 echo ========================================
 echo.
 
-call .venv\Scripts\activate && streamlit run streamlit_app.py
+call .venv\Scripts\activate && uv run streamlit run main.py
 
 echo.
 echo Streamlit server stopped.
