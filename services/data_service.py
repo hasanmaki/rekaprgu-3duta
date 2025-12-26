@@ -3,7 +3,9 @@ import streamlit as st
 
 
 @st.cache_data(ttl=600)
-def fetch_and_process_data(kode_produk: str, tgl_awal=None, tgl_akhir=None):
+def fetch_and_process_data(
+    kode_produk: str, tgl_awal=None, tgl_akhir=None
+) -> pd.DataFrame:
     """
     Lazy loading: Data hanya di-load jika kode_produk berubah.
     Logic labeling menggunakan vektorisasi (lebih cepat dari .apply).
@@ -18,8 +20,8 @@ def fetch_and_process_data(kode_produk: str, tgl_awal=None, tgl_akhir=None):
         return pd.DataFrame()
     placeholders = ",".join([f":kode_{i}" for i in range(len(kode_list))])
 
-    # Base query
-    sql = f"SELECT tujuan, status, sn, tgl_status FROM transaksi WHERE kode_produk IN ({placeholders})"
+    # Base query - include kode_produk so we can report and filter by it
+    sql = f"SELECT kode_produk, tujuan, status, sn, tgl_status FROM transaksi WHERE kode_produk IN ({placeholders})"
 
     # Add date filter based on parameters
     date_conditions = []
@@ -79,13 +81,17 @@ def fetch_and_process_data(kode_produk: str, tgl_awal=None, tgl_akhir=None):
     return df
 
 
-def get_summary_table(df: pd.DataFrame):
-    """Transformasi data untuk tabel ringkasan."""
+@st.cache_data(ttl=300)
+def get_summary_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Transformasi data untuk tabel ringkasan.
+
+    Cached to avoid repeated grouping work on reruns (e.g., when switching tabs).
+    """
     if df.empty:
         return pd.DataFrame()
-    # Use final_status for summary instead of status_label
+    # Use final_status for summary instead of status_label; include kode_produk for multi-product reports
     summary = (
-        df.groupby(["tujuan", "final_status"])
+        df.groupby(["kode_produk", "tujuan", "final_status"])
         .size()
         .unstack(fill_value=0)
         .reset_index()
@@ -96,83 +102,18 @@ def get_summary_table(df: pd.DataFrame):
     return summary
 
 
-def get_styled_summary_table(df: pd.DataFrame):
-    """Transformasi data untuk tabel ringkasan dengan color coding."""
+def get_styled_summary_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Transformasi data untuk tabel ringkasan tanpa color coding.
+
+    Uses cached `get_summary_table` internally to avoid repeated grouping work.
+    """
     if df.empty:
         return pd.DataFrame()
 
-    summary = (
-        df.groupby(["tujuan", "final_status"])
-        .size()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-
-    summary.columns.name = None
-
-    def highlight_cells(styler):
-        # Apply different colors to different columns
-        if "SUKSES PROFIT" in summary.columns:
-            styler.apply(
-                lambda x: [
-                    "background-color: lightgreen"
-                    if v > 0
-                    else "background-color: lightgray"
-                    for v in x
-                ],
-                subset=["SUKSES PROFIT"],
-            )
-        if "SUKSES LOSS" in summary.columns:
-            styler.apply(
-                lambda x: [
-                    "background-color: lightyellow"
-                    if v > 0
-                    else "background-color: lightgray"
-                    for v in x
-                ],
-                subset=["SUKSES LOSS"],
-            )
-        if "GAGAL A1" in summary.columns:
-            styler.apply(
-                lambda x: [
-                    "background-color: lightcoral"
-                    if v > 0
-                    else "background-color: lightgray"
-                    for v in x
-                ],
-                subset=["GAGAL A1"],
-            )
-        return styler
-
-    styled_summary = summary.style.pipe(highlight_cells)
-
-    styled_summary = styled_summary.set_properties(**{
-        "text-align": "center",
-        "font-weight": "bold",
-        "border": "1px solid black",
-    }).set_table_styles([
-        {
-            "selector": "th",
-            "props": [
-                ("background-color", "#f0f0f0"),
-                ("font-weight", "bold"),
-                ("text-align", "center"),
-            ],
-        },
-        {
-            "selector": "caption",
-            "props": [
-                ("caption-side", "bottom"),
-                ("font-size", "0.8em"),
-                ("color", "gray"),
-            ],
-        },
-    ])
-
-    return styled_summary
+    return get_summary_table(df)
 
 
-def apply_filters(df: pd.DataFrame, session_state):
+def apply_filters(df: pd.DataFrame, session_state) -> pd.DataFrame:
     """Apply filters to the dataframe using provided session_state dict-like."""
     if df.empty:
         return df
@@ -183,6 +124,13 @@ def apply_filters(df: pd.DataFrame, session_state):
     if session_state.get("final_status_filter", []):
         filtered_df = filtered_df[
             filtered_df["final_status"].isin(session_state["final_status_filter"])
+        ]
+
+    # Filter by kode_produk (partial match)
+    if session_state.get("kode_produk_filter", ""):
+        kode_filter = session_state["kode_produk_filter"].lower()
+        filtered_df = filtered_df[
+            filtered_df["kode_produk"].str.lower().str.contains(kode_filter, na=False)
         ]
 
     # Filter by tujuan (partial match)
@@ -200,3 +148,40 @@ def apply_filters(df: pd.DataFrame, session_state):
         ]
 
     return filtered_df
+
+
+@st.cache_data(ttl=300)
+def get_dashboard_metrics(df: pd.DataFrame) -> dict:
+    """Compute simple dashboard metrics from the dataframe.
+
+    Returns a dict with keys: total, unique_tujuan, sukses, gagal
+    """
+    if df.empty:
+        return {"total": 0, "unique_tujuan": 0, "sukses": 0, "gagal": 0}
+
+    total = int(len(df))
+    unique_tujuan = int(df["tujuan"].nunique())
+    sukses = int(df["final_status"].isin(["SUKSES PROFIT", "SUKSES LOSS"]).sum())
+    gagal = int((df["final_status"] == "GAGAL A1").sum())
+
+    return {
+        "total": total,
+        "unique_tujuan": unique_tujuan,
+        "sukses": sukses,
+        "gagal": gagal,
+    }
+
+
+@st.cache_data(ttl=300)
+def get_status_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """Return counts of each final_status as a small dataframe for plotting."""
+    if df.empty:
+        return pd.DataFrame(columns=["final_status", "count"])
+
+    counts = (
+        df["final_status"]
+        .value_counts()
+        .rename_axis("final_status")
+        .reset_index(name="count")
+    )
+    return counts
