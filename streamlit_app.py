@@ -5,7 +5,7 @@ st.set_page_config(page_title="Rekap RGU", page_icon="📊", layout="wide")
 
 
 @st.cache_data(ttl=600)
-def fetch_and_process_data(kode_produk: str):
+def fetch_and_process_data(kode_produk: str, tgl_awal=None, tgl_akhir=None):
     """
     Lazy loading: Data hanya di-load jika kode_produk berubah.
     Logic labeling menggunakan vektorisasi (jauh lebih cepat dari .apply).
@@ -19,12 +19,38 @@ def fetch_and_process_data(kode_produk: str):
     if not kode_list:
         return pd.DataFrame()
     placeholders = ",".join([f":kode_{i}" for i in range(len(kode_list))])
-    sql = f"SELECT tujuan, status, sn FROM transaksi WHERE kode_produk IN ({placeholders})"
+
+    # Base query
+    sql = f"SELECT tujuan, status, sn, tgl_status FROM transaksi WHERE kode_produk IN ({placeholders})"
+
+    # Add date filter based on parameters
+    date_conditions = []
+    if tgl_awal:
+        date_conditions.append("tgl_status >= :tgl_awal")
+    if tgl_akhir:
+        # Add one day to end date to include the entire day
+        date_conditions.append("tgl_status < DATEADD(day, 1, :tgl_akhir)")
+
+    if date_conditions:
+        sql += " AND " + " AND ".join(date_conditions)
+
     params = {f"kode_{i}": kode for i, kode in enumerate(kode_list)}
+
+    # Add date parameters if they exist
+    if tgl_awal:
+        params["tgl_awal"] = tgl_awal
+    if tgl_akhir:
+        params["tgl_akhir"] = tgl_akhir
+
     df = conn.query(sql, params=params)
 
     if df.empty:
         return df
+
+    # Split datetime into date and time columns
+    df_tgl = pd.to_datetime(df["tgl_status"])
+    df["tgl_status"] = df_tgl.dt.date
+    df["jam_status"] = df_tgl.dt.time
     df["status_label"] = "GAGAL"  # Default status
     is_success = df["status"] == 20
     mask_valid = is_success & df["sn"].str.startswith("SUP", na=False)
@@ -90,20 +116,35 @@ def get_styled_summary_table(df: pd.DataFrame):
     # Apply styling with color coding using the newer methods
     def highlight_cells(styler):
         # Apply different colors to different columns
-        if 'SUKSES PROFIT' in summary.columns:
+        if "SUKSES PROFIT" in summary.columns:
             styler.apply(
-                lambda x: ['background-color: lightgreen' if v > 0 else 'background-color: lightgray' for v in x],
-                subset=['SUKSES PROFIT']
+                lambda x: [
+                    "background-color: lightgreen"
+                    if v > 0
+                    else "background-color: lightgray"
+                    for v in x
+                ],
+                subset=["SUKSES PROFIT"],
             )
-        if 'SUKSES LOSS' in summary.columns:
+        if "SUKSES LOSS" in summary.columns:
             styler.apply(
-                lambda x: ['background-color: lightyellow' if v > 0 else 'background-color: lightgray' for v in x],
-                subset=['SUKSES LOSS']
+                lambda x: [
+                    "background-color: lightyellow"
+                    if v > 0
+                    else "background-color: lightgray"
+                    for v in x
+                ],
+                subset=["SUKSES LOSS"],
             )
-        if 'GAGAL A1' in summary.columns:
+        if "GAGAL A1" in summary.columns:
             styler.apply(
-                lambda x: ['background-color: lightcoral' if v > 0 else 'background-color: lightgray' for v in x],
-                subset=['GAGAL A1']
+                lambda x: [
+                    "background-color: lightcoral"
+                    if v > 0
+                    else "background-color: lightgray"
+                    for v in x
+                ],
+                subset=["GAGAL A1"],
             )
         return styler
 
@@ -112,12 +153,26 @@ def get_styled_summary_table(df: pd.DataFrame):
 
     # Add some additional styling
     styled_summary = styled_summary.set_properties(**{
-        'text-align': 'center',
-        'font-weight': 'bold',
-        'border': '1px solid black'
+        "text-align": "center",
+        "font-weight": "bold",
+        "border": "1px solid black",
     }).set_table_styles([
-        {'selector': 'th', 'props': [('background-color', '#f0f0f0'), ('font-weight', 'bold'), ('text-align', 'center')]},
-        {'selector': 'caption', 'props': [('caption-side', 'bottom'), ('font-size', '0.8em'), ('color', 'gray')]}
+        {
+            "selector": "th",
+            "props": [
+                ("background-color", "#f0f0f0"),
+                ("font-weight", "bold"),
+                ("text-align", "center"),
+            ],
+        },
+        {
+            "selector": "caption",
+            "props": [
+                ("caption-side", "bottom"),
+                ("font-size", "0.8em"),
+                ("color", "gray"),
+            ],
+        },
     ])
 
     return styled_summary
@@ -198,6 +253,8 @@ def render_additional_filters():
         st.session_state.final_status_filter = []
         st.session_state.tujuan_filter = ""
         st.session_state.sn_filter = ""
+        st.session_state.tgl_awal = None
+        st.session_state.tgl_akhir = None
         st.rerun()
 
 
@@ -209,9 +266,30 @@ def render_sidebar():
             value="mdm",
             help="Masukkan satu atau beberapa kode produk, dipisahkan dengan koma (contoh: mdm,saka,telkomsel)",
         )
-        btn_terapkan = st.button("Terapkan Filter", type="primary")
+
+        # Add date filters
+        st.subheader("Filter Tanggal")
+        col1, col2 = st.columns(2)
+        with col1:
+            tgl_awal = st.date_input(
+                "Tanggal Awal",
+                value=None,
+                key="tgl_awal_filter",
+                help="Pilih tanggal awal untuk filter",
+            )
+        with col2:
+            tgl_akhir = st.date_input(
+                label="Tanggal Akhir",
+                value=None,
+                key="tgl_akhir_filter",
+                help="Kosongkan untuk hanya menggunakan filter tanggal awal",
+            )
+
+        btn_terapkan = st.button("Terapkan Filter", type="primary", width="stretch")
         if btn_terapkan:
             st.session_state.active_kode = kode_input
+            st.session_state.tgl_awal = tgl_awal
+            st.session_state.tgl_akhir = tgl_akhir
 
         st.divider()
         render_additional_filters()
@@ -260,21 +338,27 @@ def render_matrix_and_calculation(df: pd.DataFrame):
 
     st.subheader("📊 Summary Matrix", divider="gray")
     styled_summary_df = get_styled_summary_table(df)
-    st.dataframe(styled_summary_df, width="stretch", hide_index=True, use_container_width=True)
+    st.dataframe(styled_summary_df, width="stretch", hide_index=True)
 
     # Summary Statistics
     st.subheader("📋 Summary Statistics", divider="gray")
 
     # Create summary statistics dataframe
     summary_stats = pd.DataFrame({
-        'Kategori': ['Total Transaksi', 'Total Tujuan Unik', 'SUKSES PROFIT', 'SUKSES LOSS', 'GAGAL A1'],
-        'Jumlah': [
+        "Kategori": [
+            "Total Transaksi",
+            "Total Tujuan Unik",
+            "SUKSES PROFIT",
+            "SUKSES LOSS",
+            "GAGAL A1",
+        ],
+        "Jumlah": [
             len(df),
-            df['tujuan'].nunique(),
-            (df['final_status'] == 'SUKSES PROFIT').sum(),
-            (df['final_status'] == 'SUKSES LOSS').sum(),
-            (df['final_status'] == 'GAGAL A1').sum()
-        ]
+            df["tujuan"].nunique(),
+            (df["final_status"] == "SUKSES PROFIT").sum(),
+            (df["final_status"] == "SUKSES LOSS").sum(),
+            (df["final_status"] == "GAGAL A1").sum(),
+        ],
     })
 
     st.dataframe(summary_stats, width="stretch", hide_index=True)
@@ -343,13 +427,23 @@ def render_main_content(df: pd.DataFrame):
         kode_list = [
             k.strip() for k in st.session_state.active_kode.split(",") if k.strip()
         ]
+
+        # Format tanggal info
+        tgl_info = ""
+        if st.session_state.get("tgl_awal"):
+            tgl_awal_str = st.session_state.tgl_awal.strftime("%d-%m-%Y")
+            tgl_info = f" - Tgl: {tgl_awal_str}"
+            if st.session_state.get("tgl_akhir"):
+                tgl_akhir_str = st.session_state.tgl_akhir.strftime("%d-%m-%Y")
+                tgl_info += f" s/d {tgl_akhir_str}"
+
         if len(kode_list) > 1:
             st.header(
-                f"Rekap RGU - {len(kode_list)} Produk: {', '.join(kode_list)}",
+                f"Rekap RGU - {len(kode_list)} Produk: {', '.join(kode_list)}{tgl_info}",
                 divider="blue",
             )
         else:
-            st.header(f"Rekap RGU - Produk: {kode_list[0]}", divider="blue")
+            st.header(f"Rekap RGU - Produk: {kode_list[0]}{tgl_info}", divider="blue")
     else:
         st.header("Rekap RGU", divider="blue")
 
@@ -370,11 +464,19 @@ def main():
     # Inisialisasi control state (bukan data state)
     if "active_kode" not in st.session_state:
         st.session_state.active_kode = None
+    if "tgl_awal" not in st.session_state:
+        st.session_state.tgl_awal = None
+    if "tgl_akhir" not in st.session_state:
+        st.session_state.tgl_akhir = None
 
     render_sidebar()
 
     if st.session_state.active_kode:
-        data = fetch_and_process_data(st.session_state.active_kode)
+        data = fetch_and_process_data(
+            st.session_state.active_kode,
+            st.session_state.tgl_awal,
+            st.session_state.tgl_akhir,
+        )
 
         if not data.empty:
             # Apply filters to the data
@@ -385,6 +487,8 @@ def main():
                 st.session_state.get("final_status_filter", [])
                 or st.session_state.get("tujuan_filter", "")
                 or st.session_state.get("sn_filter", "")
+                or st.session_state.get("tgl_awal", None)
+                or st.session_state.get("tgl_akhir", None)
             )
 
             if has_filters:
